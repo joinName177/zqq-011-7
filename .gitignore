@@ -1,0 +1,13 @@
+node_modules
+dist
+.DS_Store
+*.local
+tsconfig.tsbuildinfo
+
+# PINRU annotation baseline
+node_modules/
+.DS_Store
+.env
+.env.*
+!.env.example
+!.env.sample
