@@ -67,6 +67,17 @@ function refreshView() {
         chartData = metEngine.generateSynopticChart(filtered.length > 0 ? filtered : records);
         chartData.currentRecord = record;
         refreshView();
+      },
+      onDeleteRecord: (record: MoodRecord) => {
+        // 单条删除仅影响该记录，剩余数据继续参与统计与编辑
+        const confirmed = window.confirm(
+          `确定删除 ${record.date}「${record.tag}」这条观测记录吗？\n其余记录与统计不受影响。`
+        );
+        if (!confirmed) return;
+        repo.delete(record.id);
+        records = repo.getAll();
+        chartData = metEngine.generateSynopticChart(records);
+        refreshView();
       }
     },
     () => {
@@ -83,7 +94,8 @@ function refreshView() {
     },
     (note: string) => {
       noteText = note;
-    }
+    },
+    repo.getRecoveryReport()
   );
 }
 

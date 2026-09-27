@@ -90,41 +90,84 @@ export const TAG_METAS: Record<string, MoodTagMeta> = {
   }
 };
 
-export function createRecordFromTag(tag: string, intensity: number, note: string, dateStr?: string): MoodRecord {
-  const meta = TAG_METAS[tag] || TAG_METAS['阴转多云'];
-  const pressureOffset = (5 - intensity) * 3;
-  const pressureHpa = Math.max(960, Math.min(1045, meta.defaultPressure + pressureOffset));
-  const tempOffset = (intensity - 5) * 1.2;
-  const temperatureC = Math.round(meta.defaultTemp + tempOffset);
-  const humidityPercent = Math.min(100, Math.max(20, meta.defaultHumidity + (intensity > 6 ? 10 : -5)));
+const WIND_DIRECTION_NAMES = ['东北', '东', '东南', '南', '西南', '西', '西北', '北'] as const;
 
-  const windDirections = ['东北', '东', '东南', '南', '西南', '西', '西北', '北'];
-  const dirIdx = Math.abs((tag.charCodeAt(0) + intensity) % 8);
-  const windDirName = windDirections[dirIdx];
+export interface TelemetryDraft {
+  pressureHpa: number;
+  temperatureC: number;
+  humidityPercent: number;
+  windSpeedKmH: number;
+  windDirectionDeg: number;
+  windDirectionName: string;
+}
+
+/** 由标签与强度派生全部气象指标；恢复损坏记录时按同一基准重算，保证统计口径一致 */
+export function deriveTelemetry(tag: string, intensity: number): TelemetryDraft {
+  const meta = TAG_METAS[tag] || TAG_METAS['阴转多云'];
+  const safeIntensity = Number.isFinite(intensity) ? Math.max(1, Math.min(10, intensity)) : 5;
+  const pressureOffset = (5 - safeIntensity) * 3;
+  const pressureHpa = Math.max(960, Math.min(1045, meta.defaultPressure + pressureOffset));
+  const tempOffset = (safeIntensity - 5) * 1.2;
+  const temperatureC = Math.round(meta.defaultTemp + tempOffset);
+  const humidityPercent = Math.min(100, Math.max(20, meta.defaultHumidity + (safeIntensity > 6 ? 10 : -5)));
+
+  const dirIdx = Math.abs((tag.charCodeAt(0) + safeIntensity) % 8);
   const windDeg = dirIdx * 45;
-  const windSpeed = 5 + intensity * 3.5;
+  const windSpeed = 5 + safeIntensity * 3.5;
 
   return {
-    id: `rec-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-    date: dateStr || new Date().toISOString().split('T')[0],
-    tag,
-    intensity,
-    note: note.trim() || '平静观测记录',
     pressureHpa,
     temperatureC,
     humidityPercent,
     windSpeedKmH: Math.round(windSpeed),
     windDirectionDeg: windDeg,
-    windDirectionName: windDirName
+    windDirectionName: WIND_DIRECTION_NAMES[dirIdx]
   };
 }
 
-export function evaluateSynopticSystem(records: MoodRecord[]): SynopticChartData {
-  const sorted = [...records].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  const currentRecord = sorted[sorted.length - 1] || createRecordFromTag('阴转多云', 5, '默认天气');
+/** 由风向角度反推八方位中文名，非法角度回退东南风 */
+export function windDirectionNameOf(deg: number): string {
+  if (!Number.isFinite(deg)) return WIND_DIRECTION_NAMES[2];
+  const idx = (((Math.round(deg / 45) % 8) + 8) % 8);
+  return WIND_DIRECTION_NAMES[idx];
+}
+
+function generateRecordId(): string {
+  return `rec-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+}
+
+export function createRecordFromTag(tag: string, intensity: number, note: string, dateStr?: string): MoodRecord {
+  return {
+    id: generateRecordId(),
+    date: dateStr || new Date().toISOString().split('T')[0],
+    tag,
+    intensity: Number.isFinite(intensity) ? Math.max(1, Math.min(10, intensity)) : 5,
+    note: note.trim() || '平静观测记录',
+    ...deriveTelemetry(tag, intensity)
+  };
+}
+
+const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+export function evaluateSynopticSystem(recordsInput: MoodRecord[]): SynopticChartData {
+  // 统计层双保险：过滤掉关键数值字段损坏的记录，单条坏记录不污染全部统计
+  const validInput = recordsInput.filter(
+    r =>
+      !!r &&
+      typeof r.date === 'string' &&
+      isFiniteNumber(r.pressureHpa) &&
+      isFiniteNumber(r.temperatureC) &&
+      isFiniteNumber(r.humidityPercent) &&
+      isFiniteNumber(r.windSpeedKmH) &&
+      isFiniteNumber(r.windDirectionDeg) &&
+      isFiniteNumber(r.intensity)
+  );
+  // YYYY-MM-DD 可直接做字符串比较，避免 new Date(非法日期) 产生 NaN 打乱排序
+  const sorted = [...validInput].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const currentRecord = sorted[sorted.length - 1] || createRecordFromTag('阴转多云', 5, '平静观测记录');
 
   const totalPressure = sorted.reduce((acc, r) => acc + r.pressureHpa, 0);
-  const avgPressure = Math.round(totalPressure / sorted.length);
+  const avgPressure = sorted.length > 0 ? Math.round(totalPressure / sorted.length) : 0;
 
   // Barometric zones analysis
   let equatorial = 0; // high intensity + low/moderate pressure
@@ -268,7 +311,9 @@ export function evaluateSynopticSystem(records: MoodRecord[]): SynopticChartData
 
   // Determine system type
   let pressureSystemType: SynopticChartData['pressureSystemType'] = '温带反气旋平稳';
-  if (avgPressure >= 1020) pressureSystemType = '副热带高压晴空';
+  if (sorted.length === 0) {
+    pressureSystemType = '温带反气旋平稳';
+  } else if (avgPressure >= 1020) pressureSystemType = '副热带高压晴空';
   else if (avgPressure < 990) pressureSystemType = '强烈冷涡旋';
   else if (alerts.length > 0) pressureSystemType = '锋面气旋多变';
   else pressureSystemType = '深槽低气压阴霾';
@@ -283,6 +328,9 @@ export function evaluateSynopticSystem(records: MoodRecord[]): SynopticChartData
     monsoon,
     alerts,
     pressureSystemType,
-    metSummary: `气象综观显示：当前心境领空受【${pressureSystemType}】统御。全周期平均气压 ${avgPressure} hPa，近期主要受【${monsoon.vectorName}】影响。${alerts.length > 0 ? `当前挂起 ${alerts.length} 个灾害性气象预警！` : '整层大气环流平稳，无破坏性对流。'}`
+    metSummary:
+      sorted.length === 0
+        ? '气象综观显示：当前心境领空暂无观测记录，等待第一条心情天气签到。'
+        : `气象综观显示：当前心境领空受【${pressureSystemType}】统御。全周期平均气压 ${avgPressure} hPa，近期主要受【${monsoon.vectorName}】影响。${alerts.length > 0 ? `当前挂起 ${alerts.length} 个灾害性气象预警！` : '整层大气环流平稳，无破坏性对流。'}`
   };
 }

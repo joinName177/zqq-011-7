@@ -1,12 +1,18 @@
 import { SynopticChartData, MoodRecord } from '../core/models';
 import { TAG_METAS } from '../core/meteorology-engine';
+import { RecoveryReport } from '../core/record-recovery';
 
 export interface WeatherUIHandlers {
   onOpenLogModal: () => void;
   onResetData: () => void;
   onSubmitLog: (tag: string, intensity: number, note: string) => void;
   onSelectRecord: (record: MoodRecord) => void;
+  onDeleteRecord: (record: MoodRecord) => void;
 }
+
+/** 所有数值字段统一安全渲染：损坏数据修复失败时也不会显示 NaN/undefined */
+const safeNum = (v: unknown, fallback: string = '—'): string =>
+  typeof v === 'number' && Number.isFinite(v) ? String(v) : fallback;
 
 export function renderWeatherApp(
   container: HTMLElement,
@@ -19,13 +25,76 @@ export function renderWeatherApp(
   onCloseModal: () => void,
   onTagChange: (tag: string) => void,
   onIntensityChange: (val: number) => void,
-  onNoteChange: (val: string) => void
+  onNoteChange: (val: string) => void,
+  recoveryReport: RecoveryReport | null = null
 ) {
   const cur = chartData.currentRecord;
   const meta = TAG_METAS[cur.tag] || TAG_METAS['阴转多云'];
 
   const esc = (s: string) =>
     s.replace(/[&<>'"]/g, t => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[t] || t));
+
+  const hasRecoveryInfo =
+    recoveryReport !== null &&
+    (recoveryReport.ignoredCount > 0 ||
+      recoveryReport.repairedCount > 0 ||
+      recoveryReport.storageNotices.length > 0);
+
+  const recoveryPanelHtml = hasRecoveryInfo
+    ? `
+    <section class="recovery-panel" aria-label="数据恢复报告">
+      <div class="recovery-panel-head">
+        <h3>🩹 本地档案降级恢复报告</h3>
+        <span class="recovery-counts">
+          保留 ${recoveryReport!.keptCount} 条 · 修复 ${recoveryReport!.repairedCount} 条 · 忽略 ${recoveryReport!.ignoredCount} 条
+        </span>
+      </div>
+      ${
+        recoveryReport!.storageNotices.length > 0
+          ? `<ul class="recovery-notices">${recoveryReport!.storageNotices.map(n => `<li>${esc(n)}</li>`).join('')}</ul>`
+          : ''
+      }
+      ${
+        recoveryReport!.ignored.length > 0
+          ? `
+        <details class="recovery-details" open>
+          <summary>被整条忽略、未参与统计的记录（${recoveryReport!.ignored.length} 条，点击展开原因）</summary>
+          <ul class="recovery-entry-list ignored">
+            ${recoveryReport!.ignored
+              .map(
+                e => `
+              <li>
+                <span class="recovery-entry-id">${esc(e.identity)}</span>
+                <span class="recovery-reasons">${e.reasons.map(esc).join('；')}</span>
+              </li>`
+              )
+              .join('')}
+          </ul>
+        </details>`
+          : ''
+      }
+      ${
+        recoveryReport!.repaired.length > 0
+          ? `
+        <details class="recovery-details">
+          <summary>字段缺失/越界、已自动修复并保留的记录（${recoveryReport!.repaired.length} 条，点击展开原因）</summary>
+          <ul class="recovery-entry-list repaired">
+            ${recoveryReport!.repaired
+              .map(
+                e => `
+              <li>
+                <span class="recovery-entry-id">${esc(e.identity)}</span>
+                <span class="recovery-reasons">${e.reasons.map(esc).join('；')}</span>
+              </li>`
+              )
+              .join('')}
+          </ul>
+        </details>`
+          : ''
+      }
+    </section>
+  `
+    : '';
 
   // Generate Isobar SVG paths dynamically based on records
   const isobarsSvg = `
@@ -103,7 +172,7 @@ export function renderWeatherApp(
         <circle cx="0" cy="0" r="14" fill="#070d18" stroke="#00f0ff" stroke-width="2" />
         <text x="0" y="5" font-size="12" text-anchor="middle">${meta.icon}</text>
         <rect x="-65" y="22" width="130" height="24" rx="4" fill="rgba(14,23,38,0.85)" stroke="rgba(0,240,255,0.3)" />
-        <text x="0" y="38" fill="#e2eafc" font-size="11" font-weight="bold" text-anchor="middle">气压观测点: ${cur.pressureHpa} hPa</text>
+        <text x="0" y="38" fill="#e2eafc" font-size="11" font-weight="bold" text-anchor="middle">气压观测点: ${safeNum(cur.pressureHpa)} hPa</text>
       </g>
     </svg>
   `;
@@ -123,6 +192,8 @@ export function renderWeatherApp(
           <button class="btn-record-mood" id="btnOpenLog">✍️ 记录今日心情天气</button>
         </div>
       </header>
+
+      ${recoveryPanelHtml}
 
       ${
         chartData.alerts.length > 0
@@ -153,23 +224,23 @@ export function renderWeatherApp(
           <div class="current-telemetry">
             <div class="telemetry-card">
               <div class="lbl">心境气压 (Barometer)</div>
-              <div class="val" style="color:var(--met-cyan);">${cur.pressureHpa} <span style="font-size:12px;">hPa</span></div>
-              <div class="lbl">${cur.pressureHpa < 1000 ? '低压对流' : '高压反气旋'}</div>
+              <div class="val" style="color:var(--met-cyan);">${safeNum(cur.pressureHpa)} <span style="font-size:12px;">hPa</span></div>
+              <div class="lbl">${typeof cur.pressureHpa === 'number' && cur.pressureHpa < 1000 ? '低压对流' : '高压反气旋'}</div>
             </div>
             <div class="telemetry-card">
               <div class="lbl">情绪温度 (Temperature)</div>
-              <div class="val" style="color:var(--met-gold);">${cur.temperatureC} <span style="font-size:12px;">°C</span></div>
+              <div class="val" style="color:var(--met-gold);">${safeNum(cur.temperatureC)} <span style="font-size:12px;">°C</span></div>
               <div class="lbl">体感适宜度良好</div>
             </div>
             <div class="telemetry-card">
               <div class="lbl">心理湿度 (Humidity)</div>
-              <div class="val" style="color:var(--met-blue);">${cur.humidityPercent}%</div>
-              <div class="lbl">${cur.humidityPercent > 80 ? '湿润多云' : '清爽干燥'}</div>
+              <div class="val" style="color:var(--met-blue);">${safeNum(cur.humidityPercent)}%</div>
+              <div class="lbl">${typeof cur.humidityPercent === 'number' && cur.humidityPercent > 80 ? '湿润多云' : '清爽干燥'}</div>
             </div>
             <div class="telemetry-card">
               <div class="lbl">思绪风场 (Wind Field)</div>
-              <div class="val" style="color:#fff;">${cur.windDirectionName}风</div>
-              <div class="lbl">${cur.windSpeedKmH} km/h</div>
+              <div class="val" style="color:#fff;">${esc(cur.windDirectionName || '—')}风</div>
+              <div class="lbl">${safeNum(cur.windSpeedKmH)} km/h</div>
             </div>
           </div>
 
@@ -188,20 +259,31 @@ export function renderWeatherApp(
           <!-- Recent Days Sequence Strip -->
           <div class="timeline-section">
             <h3>📅 近期气象观测序列 (点击切换观测标本)</h3>
+            ${
+              chartData.records.length === 0
+                ? `
+              <div class="records-empty">
+                <div class="records-empty-icon">🌥️</div>
+                <p>当前心境领空还没有任何观测记录，统计与天气图处于安全空态。</p>
+                <p class="records-empty-hint">点击右上角「✍️ 记录今日心情天气」，留下第一条心情数据。</p>
+              </div>`
+                : `
             <div class="records-strip">
               ${chartData.records
                 .map(
                   r => `
                 <div class="record-pill ${r.id === cur.id ? 'active' : ''}" data-id="${r.id}">
-                  <div class="pill-date">${r.date.slice(5)}</div>
+                  <button type="button" class="pill-delete" data-delete-id="${r.id}" title="删除该条观测记录（剩余数据不受影响）">×</button>
+                  <div class="pill-date">${esc(String(r.date ?? '').slice(5) || '日期未知')}</div>
                   <div class="pill-icon">${(TAG_METAS[r.tag] || TAG_METAS['阴转多云']).icon}</div>
-                  <div class="pill-tag">${esc(r.tag)}</div>
-                  <div class="pill-pressure">${r.pressureHpa} hPa</div>
+                  <div class="pill-tag">${esc(r.tag || '未知标签')}</div>
+                  <div class="pill-pressure">${safeNum(r.pressureHpa)} hPa</div>
                 </div>
               `
                 )
                 .join('')}
-            </div>
+            </div>`
+            }
           </div>
         </main>
 
@@ -332,10 +414,21 @@ export function renderWeatherApp(
   container.querySelector('#btnReset')?.addEventListener('click', handlers.onResetData);
 
   container.querySelectorAll('.record-pill').forEach(pill => {
-    pill.addEventListener('click', () => {
+    pill.addEventListener('click', e => {
+      // 点击删除按钮时不触发切换标本
+      if ((e.target as HTMLElement).closest('.pill-delete')) return;
       const id = pill.getAttribute('data-id');
       const rec = chartData.records.find(r => r.id === id);
       if (rec) handlers.onSelectRecord(rec);
+    });
+  });
+
+  container.querySelectorAll('.pill-delete').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const id = btn.getAttribute('data-delete-id');
+      const rec = chartData.records.find(r => r.id === id);
+      if (rec) handlers.onDeleteRecord(rec);
     });
   });
 
