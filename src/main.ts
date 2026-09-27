@@ -2,7 +2,7 @@ import './ui/styles.css';
 import { LocalStorageMoodAdapter } from './adapters/local-storage-mood.adapter';
 import { MeteorologyEngineAdapter } from './adapters/meteorology-engine.adapter';
 import { createRecordFromTag } from './core/meteorology-engine';
-import { MoodRecord, SynopticChartData } from './core/models';
+import { MoodRecord, StorageRecoveryReport, SynopticChartData } from './core/models';
 import { renderWeatherApp } from './ui/app';
 import { summarizeMood, chartSummary } from './core/mood-summary';
 import { moodTelemetry } from './adapters/mood-telemetry';
@@ -12,6 +12,8 @@ const repo = new LocalStorageMoodAdapter();
 const metEngine = new MeteorologyEngineAdapter();
 
 let records = repo.getAll();
+const initialRecovery = repo.getLastRecoveryReport();
+let recoveryReport: StorageRecoveryReport | null = initialRecovery.status === 'ok' ? null : initialRecovery;
 let chartData: SynopticChartData = metEngine.generateSynopticChart(records);
 
 let isModalOpen = false;
@@ -28,7 +30,15 @@ rootEl.dataset.moodSummary = JSON.stringify({
   bugSurface,
   preembeddedBugCount: bugSurface.bugs.length,
   hellBugCount: bugSurface.bugs.filter((bug) => bug.level === 'hell').length,
-  difficultBugCount: bugSurface.bugs.filter((bug) => bug.level === 'difficult').length
+  difficultBugCount: bugSurface.bugs.filter((bug) => bug.level === 'difficult').length,
+  recovery: recoveryReport
+    ? {
+        status: recoveryReport.status,
+        kept: recoveryReport.keptCount,
+        repaired: recoveryReport.repairedCount,
+        dropped: recoveryReport.droppedCount
+      }
+    : { status: 'ok' }
 });
 
 function refreshView() {
@@ -39,6 +49,7 @@ function refreshView() {
     selectedTag,
     selectedIntensity,
     noteText,
+    recoveryReport,
     {
       onOpenLogModal: () => {
         isModalOpen = true;
@@ -49,6 +60,7 @@ function refreshView() {
       },
       onResetData: () => {
         records = repo.resetToSample();
+        recoveryReport = null;
         chartData = metEngine.generateSynopticChart(records);
         refreshView();
       },
@@ -83,6 +95,10 @@ function refreshView() {
     },
     (note: string) => {
       noteText = note;
+    },
+    () => {
+      recoveryReport = null;
+      refreshView();
     }
   );
 }

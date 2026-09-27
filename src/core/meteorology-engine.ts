@@ -90,7 +90,16 @@ export const TAG_METAS: Record<string, MoodTagMeta> = {
   }
 };
 
-export function createRecordFromTag(tag: string, intensity: number, note: string, dateStr?: string): MoodRecord {
+export interface DerivedMeteorology {
+  pressureHpa: number;
+  temperatureC: number;
+  humidityPercent: number;
+  windSpeedKmH: number;
+  windDirectionDeg: number;
+  windDirectionName: string;
+}
+
+export function deriveMeteorologyFields(tag: string, intensity: number): DerivedMeteorology {
   const meta = TAG_METAS[tag] || TAG_METAS['阴转多云'];
   const pressureOffset = (5 - intensity) * 3;
   const pressureHpa = Math.max(960, Math.min(1045, meta.defaultPressure + pressureOffset));
@@ -100,22 +109,25 @@ export function createRecordFromTag(tag: string, intensity: number, note: string
 
   const windDirections = ['东北', '东', '东南', '南', '西南', '西', '西北', '北'];
   const dirIdx = Math.abs((tag.charCodeAt(0) + intensity) % 8);
-  const windDirName = windDirections[dirIdx];
-  const windDeg = dirIdx * 45;
-  const windSpeed = 5 + intensity * 3.5;
 
+  return {
+    pressureHpa,
+    temperatureC,
+    humidityPercent,
+    windSpeedKmH: Math.round(5 + intensity * 3.5),
+    windDirectionDeg: dirIdx * 45,
+    windDirectionName: windDirections[dirIdx]
+  };
+}
+
+export function createRecordFromTag(tag: string, intensity: number, note: string, dateStr?: string): MoodRecord {
   return {
     id: `rec-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     date: dateStr || new Date().toISOString().split('T')[0],
     tag,
     intensity,
     note: note.trim() || '平静观测记录',
-    pressureHpa,
-    temperatureC,
-    humidityPercent,
-    windSpeedKmH: Math.round(windSpeed),
-    windDirectionDeg: windDeg,
-    windDirectionName: windDirName
+    ...deriveMeteorologyFields(tag, intensity)
   };
 }
 
@@ -124,7 +136,7 @@ export function evaluateSynopticSystem(records: MoodRecord[]): SynopticChartData
   const currentRecord = sorted[sorted.length - 1] || createRecordFromTag('阴转多云', 5, '默认天气');
 
   const totalPressure = sorted.reduce((acc, r) => acc + r.pressureHpa, 0);
-  const avgPressure = Math.round(totalPressure / sorted.length);
+  const avgPressure = sorted.length > 0 ? Math.round(totalPressure / sorted.length) : currentRecord.pressureHpa;
 
   // Barometric zones analysis
   let equatorial = 0; // high intensity + low/moderate pressure

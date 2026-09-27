@@ -1,4 +1,4 @@
-import { SynopticChartData, MoodRecord } from '../core/models';
+import { SynopticChartData, MoodRecord, StorageRecoveryReport } from '../core/models';
 import { TAG_METAS } from '../core/meteorology-engine';
 
 export interface WeatherUIHandlers {
@@ -15,11 +15,13 @@ export function renderWeatherApp(
   selectedTag: string,
   selectedIntensity: number,
   noteText: string,
+  recoveryReport: StorageRecoveryReport | null,
   handlers: WeatherUIHandlers,
   onCloseModal: () => void,
   onTagChange: (tag: string) => void,
   onIntensityChange: (val: number) => void,
-  onNoteChange: (val: string) => void
+  onNoteChange: (val: string) => void,
+  onDismissRecovery: () => void
 ) {
   const cur = chartData.currentRecord;
   const meta = TAG_METAS[cur.tag] || TAG_METAS['阴转多云'];
@@ -134,6 +136,50 @@ export function renderWeatherApp(
             <span style="font-size:13px;color:var(--met-text);">${esc(chartData.alerts[0].triggerCause)}</span>
           </div>
           <span style="font-size:12px;color:var(--met-muted);">${chartData.alerts[0].issuedTime} 发布</span>
+        </div>
+      `
+          : ''
+      }
+
+      ${
+        recoveryReport
+          ? `
+        <div class="recovery-banner ${recoveryReport.status}">
+          <div class="recovery-body">
+            <div class="recovery-title">
+              ${recoveryReport.status === 'corrupted' ? '🧯 本地档案已损坏，按空档案降级打开' : '🛠️ 本地档案已按记录降级恢复'}
+            </div>
+            <div class="recovery-summary">
+              ${esc(recoveryReport.messages.join(' '))}
+              ${
+                recoveryReport.totalStored > 0
+                  ? `共检测 ${recoveryReport.totalStored} 条存储记录：保留 ${recoveryReport.keptCount} 条、修复 ${recoveryReport.repairedCount} 条、忽略 ${recoveryReport.droppedCount} 条。`
+                  : ''
+              }
+              剩余数据可正常查看与继续编辑。
+            </div>
+            ${
+              recoveryReport.entries.length > 0
+                ? `
+              <ul class="recovery-entry-list">
+                ${recoveryReport.entries
+                  .slice(0, 6)
+                  .map(
+                    e => `
+                  <li>
+                    <span class="recovery-entry-action ${e.action}">${e.action === 'dropped' ? '已忽略' : '已修复'}</span>
+                    第 ${e.index + 1} 条${e.date ? `（${esc(e.date)}）` : ''}${e.tag ? `「${esc(e.tag)}」` : ''}：${esc(e.reasons.join('；'))}
+                  </li>
+                `
+                  )
+                  .join('')}
+                ${recoveryReport.entries.length > 6 ? `<li>…另有 ${recoveryReport.entries.length - 6} 条处理明细未展开</li>` : ''}
+              </ul>
+            `
+                : ''
+            }
+          </div>
+          <button type="button" class="recovery-dismiss" id="btnDismissRecovery">知道了</button>
         </div>
       `
           : ''
@@ -330,6 +376,7 @@ export function renderWeatherApp(
   // Attach event listeners
   container.querySelector('#btnOpenLog')?.addEventListener('click', handlers.onOpenLogModal);
   container.querySelector('#btnReset')?.addEventListener('click', handlers.onResetData);
+  container.querySelector('#btnDismissRecovery')?.addEventListener('click', onDismissRecovery);
 
   container.querySelectorAll('.record-pill').forEach(pill => {
     pill.addEventListener('click', () => {

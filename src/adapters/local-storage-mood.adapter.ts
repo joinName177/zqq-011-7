@@ -1,24 +1,51 @@
-import { MoodRecord } from '../core/models';
+import { MoodRecord, StorageRecoveryReport } from '../core/models';
 import { MoodRepositoryPort } from '../ports/mood-repository.port';
 import { createRecordFromTag } from '../core/meteorology-engine';
+import { createOkReport, sanitizeMoodRecords } from '../core/storage-recovery';
 
 const STORAGE_KEY = 'mood_meteorology_records_v1';
+const QUARANTINE_KEY = 'mood_meteorology_records_v1_quarantine';
 
 export class LocalStorageMoodAdapter implements MoodRepositoryPort {
+  private lastReport: StorageRecoveryReport = createOkReport();
+
   getAll(): MoodRecord[] {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(STORAGE_KEY);
+    } catch {
+      raw = null;
+    }
     if (!raw) {
+      // 仅在完全没有任何历史数据（首次使用）时才写入示例序列
       return this.resetToSample();
     }
+
+    let parsed: unknown = null;
+    let parseFailed = false;
     try {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
-      }
+      parsed = JSON.parse(raw);
     } catch {
-      // ignore
+      parseFailed = true;
     }
-    return this.resetToSample();
+
+    const { records, report } = sanitizeMoodRecords(parsed, { parseFailed });
+
+    if (report.status !== 'ok') {
+      // 隔离损坏前的原始数据，避免被清洗结果覆盖后无法人工找回
+      this.persistRaw(QUARANTINE_KEY, raw);
+      report.quarantineKey = QUARANTINE_KEY;
+      report.messages.push(`损坏前的原始数据已隔离备份到「${QUARANTINE_KEY}」，不会被覆盖。`);
+      // 将修复后的档案写回，保证剩余记录可继续编辑、统计不被污染
+      this.persist(records);
+    }
+
+    this.lastReport = report;
+    return records;
+  }
+
+  getLastRecoveryReport(): StorageRecoveryReport {
+    return this.lastReport;
   }
 
   add(record: MoodRecord): void {
@@ -26,12 +53,11 @@ export class LocalStorageMoodAdapter implements MoodRepositoryPort {
     // remove existing for same date if any
     const filtered = records.filter(r => r.date !== record.date);
     filtered.push(record);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+    this.persist(filtered);
   }
 
   delete(id: string): void {
-    const records = this.getAll().filter(r => r.id !== id);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+    this.persist(this.getAll().filter(r => r.id !== id));
   }
 
   resetToSample(): MoodRecord[] {
@@ -59,7 +85,20 @@ export class LocalStorageMoodAdapter implements MoodRepositoryPort {
       return createRecordFromTag(item.tag, item.intensity, item.note, dateStr);
     });
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+    this.persist(records);
+    this.lastReport = createOkReport(records.length);
     return records;
+  }
+
+  private persist(records: MoodRecord[]): void {
+    this.persistRaw(STORAGE_KEY, JSON.stringify(records));
+  }
+
+  private persistRaw(key: string, value: string): void {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      // 存储不可用（如配额已满）：保留内存结果，不阻断后续编辑
+    }
   }
 }

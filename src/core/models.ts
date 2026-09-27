@@ -55,6 +55,27 @@ export interface ExtremeWeatherAlert {
   defenseProtocol: string[]; // 防灾自愈指南
 }
 
+export type RecordRecoveryAction = 'repaired' | 'dropped';
+
+export interface RecordRecoveryEntry {
+  index: number;               // 在存储数组中的原始位置（从 0 开始）
+  action: RecordRecoveryAction;
+  date?: string;               // 能识别出的记录日期
+  tag?: string;                // 能识别出的记录标签
+  reasons: string[];           // 修复 / 忽略的具体原因
+}
+
+export interface StorageRecoveryReport {
+  status: 'ok' | 'recovered' | 'corrupted';
+  totalStored: number;         // 存储中检测到的记录条数
+  keptCount: number;           // 原样保留
+  repairedCount: number;       // 降级修复
+  droppedCount: number;        // 无法修复被忽略
+  entries: RecordRecoveryEntry[]; // 仅包含被修复 / 被忽略的记录明细
+  messages: string[];
+  quarantineKey?: string;      // 损坏原始数据的隔离备份键
+}
+
 export interface SynopticChartData {
   chartId: string;
   generatedDate: string;
